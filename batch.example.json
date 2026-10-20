@@ -1,0 +1,28 @@
+{
+  "defaults": {
+    "dns_provider": "spaceship",
+    "gitlab_project": "group/frontend",
+    "base_branch": "dev",
+    "origin_type": "s3-website",
+    "create_distribution": true,
+    "wait_certificate": false,
+    "www_alias_for_apex": true
+  },
+  "domains": [
+    {
+      "domain": "example.com",
+      "origin": {"domain": "example.s3.amazonaws.com", "type": "custom", "path": "website/example.com"}
+    },
+    {
+      "domain": "shop.example.com",
+      "origin": "shop.s3-website-us-east-1.amazonaws.com",
+      "gitlab_project": "group/shop",
+      "spa": true
+    },
+    {
+      "domain": "legacy.com",
+      "dns_provider": "godaddy",
+      "distribution_id": "E1234567890ABC"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "domainkit"
+version = "2.0.0"
+description = "Automate CloudFront, ACM, GoDaddy or Spaceship DNS, and GitLab CI for domains"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = []
+
+[project.scripts]
+domainkit = "domainkit.cli:main"
+
+[tool.setuptools]
+packages = ["domainkit"]
+
+[tool.setuptools.package-data]
+domainkit = ["py.typed"]

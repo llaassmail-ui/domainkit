@@ -1,0 +1,29 @@
+# Local secrets and runtime configuration
+.env
+.env.*
+credentials.json
+gui-defaults.json
+domainkit.json
+*.secret.json
+
+# Python caches and local tooling
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Logs and local outputs
+*.log
+logs/
+dist/
+build/
+*.egg-info/
+
+# Local editor/system files
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+Desktop.ini

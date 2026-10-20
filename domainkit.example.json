@@ -1,0 +1,16 @@
+{
+  "gitlab_url": "https://gitlab.com",
+  "gitlab_project": "your-group/your-deploy-repo",
+  "base_branch": "dev",
+  "dns_provider": "spaceship",
+  "spaceship_endpoint": "https://spaceship.dev/api",
+  "variable_prefix": "CLOUDFRONT",
+  "variable_protected": false,
+  "variable_masked": false,
+  "dns_ttl": 600,
+  "www_alias_for_apex": true,
+  "minimum_tls": "TLSv1.2_2021",
+  "tags": {
+    "managed-by": "domainkit"
+  }
+}
