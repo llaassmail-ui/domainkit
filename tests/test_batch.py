@@ -98,9 +98,9 @@ class ValidateItemTestCase(unittest.TestCase):
 class BatchOriginTestCase(unittest.TestCase):
     def test_origin_object_preserves_domain_and_path(self) -> None:
         kwargs = _run_kwargs_for({
-            "origin": {"domain": "example-bucket.s3.amazonaws.com", "path": "website/example.com"},
+            "origin": {"domain": "assets.s3.amazonaws.com", "path": "website/example.com"},
         })
-        self.assertEqual(kwargs["origin"].domain, "example-bucket.s3.amazonaws.com")
+        self.assertEqual(kwargs["origin"].domain, "assets.s3.amazonaws.com")
         self.assertEqual(kwargs["origin"].path, "/website/example.com")
 
     def test_origin_object_requires_domain(self) -> None:

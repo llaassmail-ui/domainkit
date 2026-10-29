@@ -376,7 +376,7 @@ class GitLabTests(unittest.TestCase):
             self._client(transport).get_variable("ANY")
 
     def test_normalize_project_id_strips_breadcrumb_spaces(self) -> None:
-        self.assertEqual(normalize_project_id("Ruby / Ruby-WebSite"), "Ruby/Ruby-WebSite")
+        self.assertEqual(normalize_project_id("example-group / example-project"), "example-group/example-project")
         self.assertEqual(normalize_project_id("  group / sub group / repo  "), "group/sub group/repo")
         self.assertEqual(normalize_project_id("/group/repo/"), "group/repo")
         self.assertEqual(normalize_project_id("12345"), "12345")
@@ -385,9 +385,9 @@ class GitLabTests(unittest.TestCase):
 
     def test_breadcrumb_project_id_builds_clean_path(self) -> None:
         transport = FakeTransport().json_route("GET", r"/branches/dev$", {"name": "dev"})
-        client = GitLabClient("https://gitlab.example.com", "Ruby / Ruby-WebSite", "token", transport=transport)
+        client = GitLabClient("https://gitlab.example.com", "example-group / example-project", "token", transport=transport)
         client.get_branch("dev")
-        self.assertIn("/projects/Ruby%2FRuby-WebSite/", transport.sent[-1].url)
+        self.assertIn("/projects/example-group%2Fexample-project/", transport.sent[-1].url)
         self.assertNotIn("%20", transport.sent[-1].url)
 
     def test_get_project_returns_none_on_404(self) -> None:
@@ -406,7 +406,7 @@ class GitLabTests(unittest.TestCase):
         transport.json_route(
             "GET",
             r"/api/v4/projects\?.*page=1",
-            [{"id": 1, "path_with_namespace": "Ruby/Ruby-WebSite"}],
+            [{"id": 1, "path_with_namespace": "example-group/example-project"}],
             headers={"X-Next-Page": "2"},
         )
         transport.json_route(

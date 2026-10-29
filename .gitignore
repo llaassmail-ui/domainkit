@@ -2,6 +2,7 @@
 .env
 .env.*
 credentials.json
+credentials.json.*
 gui-defaults.json
 domainkit.json
 *.secret.json

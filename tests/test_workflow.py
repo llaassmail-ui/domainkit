@@ -1,4 +1,4 @@
-"""End-to-end pipeline tests: plan, apply, idempotent rerun, and guards."""
+﻿"""End-to-end pipeline tests: plan, apply, idempotent rerun, and guards."""
 
 from __future__ import annotations
 

@@ -13,6 +13,8 @@ import ctypes
 import json
 import os
 import sys
+import tempfile
+import uuid
 from pathlib import Path
 from typing import Dict, Iterable, Mapping, Optional
 
@@ -34,6 +36,7 @@ CREDENTIAL_KEYS = (
 
 SECRET_KEYS = frozenset(
     {
+        "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
         "AWS_SESSION_TOKEN",
         "GODADDY_API_KEY",
@@ -47,6 +50,8 @@ SECRET_KEYS = frozenset(
 _STORE_ENV = "DOMAINKIT_CREDENTIAL_STORE"
 _STORE_NAME = "credentials.json"
 _MAGIC = "domainkit-credentials-v1"
+PROFILE_KEYS = {name: tuple(k for k in CREDENTIAL_KEYS if k.startswith(name.upper() + "_"))
+                for name in ("aws", "godaddy", "spaceship", "gitlab")}
 
 
 def store_path(env: Optional[Mapping[str, str]] = None) -> Path:
@@ -116,22 +121,140 @@ def save_credentials(
 ) -> Path:
     """Write the non-empty credential values to the encrypted store."""
     target = path or store_path(env)
-    payload = {
-        key: str(values.get(key) or "").strip()
-        for key in CREDENTIAL_KEYS
-        if str(values.get(key) or "").strip()
-    }
-    envelope: Dict[str, str] = {"magic": _MAGIC}
-    envelope.update(_encrypt(json.dumps(payload, separators=(",", ":")).encode("utf-8")))
-
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(envelope, indent=2), encoding="utf-8")
-    if not _dpapi_available():
-        try:
-            os.chmod(target, 0o600)
-        except OSError:
-            pass
+    store = load_profiles(path=target)
+    for category, keys in PROFILE_KEYS.items():
+        current = profile_current(store, category)
+        if any(k in values for k in keys) and (current or any(str(values.get(k) or '').strip() for k in keys)):
+            merged = dict(current['values']) if current else {}
+            for key in keys:
+                if key in values:
+                    value = str(values.get(key) or '').strip()
+                    if value:
+                        merged[key] = value
+            put_profile(store, category, current['name'] if current else '默认凭证', merged,
+                        profile_id=current['id'] if current else None)
+    save_profiles(store, path=target)
     return target
+
+
+def empty_profiles():
+    return {'version': 2, 'profiles': {k: [] for k in PROFILE_KEYS},
+            'selected': {k: None for k in PROFILE_KEYS}}
+
+
+def profile_current(store, category):
+    return next((p for p in store['profiles'][category]
+                 if p['id'] == store['selected'][category]), None)
+
+
+def selected_values(store):
+    values = {}
+    for category in PROFILE_KEYS:
+        current = profile_current(store, category)
+        if current:
+            values.update(current['values'])
+    return values
+
+
+def validate_profiles(store):
+    try:
+        if store['version'] != 2:
+            raise ValueError()
+        for category, keys in PROFILE_KEYS.items():
+            ids, names = set(), set()
+            if not isinstance(store['profiles'][category], list):
+                raise ValueError()
+            for p in store['profiles'][category]:
+                if (not isinstance(p['id'], str) or not p['id'] or p['id'] in ids or
+                        not isinstance(p['name'], str) or not p['name'].strip() or
+                        p['name'].casefold() in names or not isinstance(p['values'], dict) or
+                        any(k not in keys or not isinstance(v, str) for k, v in p['values'].items())):
+                    raise ValueError()
+                ids.add(p['id'])
+                names.add(p['name'].casefold())
+            if store['selected'][category] is not None and store['selected'][category] not in ids:
+                raise ValueError()
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise ConfigError('凭证配置格式无效，原文件已保留') from exc
+
+
+def load_profiles(*, path):
+    payload = _read_payload(path)
+    if not payload:
+        return empty_profiles()
+    if 'version' in payload:
+        validate_profiles(payload)
+        return payload
+    store = empty_profiles()
+    for category, keys in PROFILE_KEYS.items():
+        if any(payload.get(k) for k in keys):
+            put_profile(store, category, '默认凭证', payload)
+    return store
+
+
+def put_profile(store, category, name, values, *, profile_id=None):
+    name = name.strip()
+    if not name:
+        raise ConfigError('凭证名称不能为空')
+    profiles = store['profiles'][category]
+    if any(p['name'].casefold() == name.casefold() and p['id'] != profile_id for p in profiles):
+        raise ConfigError('该类别已有同名凭证')
+    item = next((p for p in profiles if p['id'] == profile_id), None)
+    if profile_id is not None and item is None:
+        raise ConfigError('凭证不存在')
+    if item is None:
+        item = {'id': uuid.uuid4().hex}
+        profiles.append(item)
+    item.update(name=name, values={k: str(values.get(k) or '').strip() for k in PROFILE_KEYS[category]
+                                   if str(values.get(k) or '').strip()})
+    store['selected'][category] = item['id']
+    return item['id']
+
+
+def remove_profile(store, category, profile_id):
+    store['profiles'][category] = [p for p in store['profiles'][category] if p['id'] != profile_id]
+    if store['selected'][category] == profile_id:
+        store['selected'][category] = None
+
+
+def save_profiles(store, *, path):
+    validate_profiles(store)
+    envelope = {'magic': _MAGIC}
+    envelope.update(_encrypt(json.dumps(store, ensure_ascii=False).encode('utf-8')))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        old = _read_payload(path)
+        if 'version' in old:
+            validate_profiles(old)
+        else:
+            backup = path.with_name(path.name + '.v1.bak')
+            if not backup.exists():
+                fd, backup_temp = tempfile.mkstemp(prefix=backup.name + '.', dir=path.parent)
+                try:
+                    if not _dpapi_available():
+                        os.chmod(backup_temp, 0o600)
+                    with os.fdopen(fd, 'wb') as handle:
+                        handle.write(path.read_bytes())
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    os.replace(backup_temp, backup)
+                finally:
+                    if os.path.exists(backup_temp):
+                        os.unlink(backup_temp)
+    fd, temporary = tempfile.mkstemp(prefix=path.name + '.', dir=path.parent)
+    try:
+        if not _dpapi_available():
+            os.chmod(temporary, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            json.dump(envelope, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        if not _dpapi_available():
+            os.chmod(path, 0o600)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def load_credentials(
@@ -140,7 +263,10 @@ def load_credentials(
     env: Optional[Mapping[str, str]] = None,
 ) -> Dict[str, str]:
     """Read stored credentials, or an empty dict when nothing is saved yet."""
-    target = path or store_path(env)
+    return selected_values(load_profiles(path=path or store_path(env)))
+
+
+def _read_payload(target):
     if not target.is_file():
         return {}
     try:
@@ -157,7 +283,7 @@ def load_credentials(
         raise ConfigError("stored credentials are corrupted: {0}".format(exc)) from exc
     if not isinstance(values, dict):
         raise ConfigError("stored credentials must be a JSON object")
-    return {str(k): str(v) for k, v in values.items() if str(k) in CREDENTIAL_KEYS}
+    return values
 
 
 def delete_credentials(

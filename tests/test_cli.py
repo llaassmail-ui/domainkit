@@ -70,14 +70,14 @@ class CliTests(unittest.TestCase):
             ["doctor"],
             env={
                 "GITLAB_URL": "https://doc-git.example.com",
-                "GITLAB_PROJECT_ID": "Ruby / Ruby-WebSite",
+                "GITLAB_PROJECT_ID": "example-group / example-project",
                 "GITLAB_TOKEN": "glpat-token",
             },
         )
         self.assertIn("gitlab-target", output)
         self.assertIn("https://doc-git.example.com", output)
-        self.assertIn("Ruby/Ruby-WebSite", output)
-        self.assertNotIn("-> project Ruby / Ruby-WebSite", output)
+        self.assertIn("example-group/example-project", output)
+        self.assertNotIn("-> project example-group / example-project", output)
 
     def test_doctor_blank_gitlab_url_is_reported_as_public_gitlab(self) -> None:
         _code, output = self._run(

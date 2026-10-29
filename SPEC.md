@@ -1,4 +1,4 @@
-# domainkit v2 规格:域名上线自动化
+﻿# domainkit v2 规格:域名上线自动化
 
 状态:已定稿。五项待确认项已由你拍板,记录在第 11 节,实现以本文为准。
 
@@ -202,7 +202,7 @@ def create_distribution(
 
 GUI 不写自动化测试,tkinter 事件循环不值得为它搭夹具,改为手工验证启动、表单执行、日志刷新、按钮禁用恢复。
 
-现有 88 个测试必须继续全绿。
+全量测试必须继续全绿（当前 185 项）。
 
 ## 9. 边界
 
@@ -231,13 +231,13 @@ GUI 不写自动化测试,tkinter 事件循环不值得为它搭夹具,改为手
 
 **三、证书等待默认 600 秒**。`--wait` 保留为显式开关，超时按等待验证处理，停止下游步骤，稍后重跑继续。
 
-**四、验证记录名相对化**。ACM 给完整域名,GoDaddy 只认相对名,工具自动截掉区域后缀,apex 写 `@`。例如 `_c4c7d2d263470e12fb57e06bc0e7ebd2.www.oursunnyera.com.` 落到 GoDaddy 是 `_c4c7d2d263470e12fb57e06bc0e7ebd2.www`。
+**四、验证记录名相对化**。ACM 给完整域名,GoDaddy 只认相对名,工具自动截掉区域后缀,apex 写 `@`。例如 `_abc123.www.example.com.` 落到 GoDaddy 是 `_abc123.www`。
 
 **五、批次文件只支持 JSON**。不做 CSV 入口,少一种格式少一处分歧。
 
 ## 12. 诚实的说明
 
-这套代码从未对真实的 AWS、GoDaddy、GitLab 执行过,当前环境没有外网。全部验证来自单元测试和假传输层。上生产前建议先拿一个不重要的域名试跑一次。
+自动化测试不依赖真实 AWS、GoDaddy、Spaceship 或 GitLab 账号，全部请求由假传输层接管。上生产前建议先拿一个不重要的域名执行 `plan`，确认资源复用和创建计划后再正式执行。
 
 ## 13. GitLab 项目自动发现(计划)
 
@@ -245,7 +245,7 @@ GUI 不写自动化测试,tkinter 事件循环不值得为它搭夹具,改为手
 
 GUI 不再要求运维手工记住或复制 GitLab `Project ID`。用户只填写 GitLab 实例地址和 Access Token,工具自动验证 token、拉取该 token 可访问的项目列表,让用户选择目标仓库,然后把稳定的数字项目 ID 回填并保存。
 
-成功的样子:在「凭证配置」里填好 `GitLab URL` 和 `Access Token`,点击「加载 GitLab 项目」,下拉框出现 `Ruby/Ruby-WebSite  (ID: 123)` 这类选项;选中后,凭证页和单域名页的 GitLab 项目字段都变成可直接执行的项目引用。
+成功的样子:在「凭证配置」里填好 `GitLab URL` 和 `Access Token`,点击「加载 GitLab 项目」,下拉框出现 `example-group/example-project  (ID: 123)` 这类选项;选中后,凭证页和单域名页的 GitLab 项目字段都变成可直接执行的项目引用。
 
 ### 13.2 前提与假设
 
@@ -272,10 +272,10 @@ GUI 不再要求运维手工记住或复制 GitLab `Project ID`。用户只填�
 凭证配置页新增:
 
 ```text
-GitLab URL:       [https://gitlab.example.com                 ]
+GitLab URL:       [https://gitlab.example.com                    ]
 Access Token:     [********************************              ] [显示]
-项目搜索:         [Ruby-WebSite                                  ] [加载 GitLab 项目]
-项目列表:         [Ruby/Ruby-WebSite (ID: 123, default: dev)      v]
+项目搜索:         [example-project                               ] [加载 GitLab 项目]
+项目列表:         [example-group/example-project (ID: 123, default: dev) v]
 Project ID:       [123                                           ]
 ```
 
@@ -332,7 +332,7 @@ def list_accessible_projects(
 3. 保存凭证后重启 GUI,项目 ID 能恢复,token 仍按本机 DPAPI 加密保存。
 4. GitLab 项目很多时不会漏第一页之后的项目。
 5. 401/403/空结果都有中文错误提示,不会静默失败。
-6. 原来手填 `Ruby/Ruby-WebSite` 或数字 ID 的方式继续可用。
+6. 原来手填 `example-group/example-project` 或数字 ID 的方式继续可用。
 
 ### 13.9 实施计划
 
@@ -340,7 +340,7 @@ def list_accessible_projects(
 2. 增加单元测试:覆盖项目 ID 规范化、分页、搜索参数、401/403 错误传播。
 3. 改 GUI 凭证页:增加搜索框、加载按钮、项目下拉框、选择后回填 Project ID。
 4. 改凭证保存/默认配置:继续保存 `GITLAB_PROJECT_ID`,优先保存数字 ID。
-5. 手工验证:用真实 GitLab token 加载项目、选择 `Ruby/Ruby-WebSite`、运行自检。
+5. 手工验证:用测试用 GitLab token 加载项目、选择一个测试项目、运行自检。
 
 ## 14. GUI 源站预设(计划)
 
@@ -354,9 +354,9 @@ def list_accessible_projects(
 
 | 字段 | 说明 |
 | --- | --- |
-| `origin` | 源域名,如 `example-bucket.s3.ap-south-1.amazonaws.com` |
+| `origin` | 源域名,如 `assets.s3.ap-south-1.amazonaws.com` |
 | `origin_type` | `s3-website` 或 `custom` |
-| `origin_path` | 源路径前缀,如 `/website/ruby-rummy.com` |
+| `origin_path` | 源路径前缀,如 `/website/example.com` |
 
 预设保存在 `%LOCALAPPDATA%\\domainkit\\gui-defaults.json` 的 `origin_presets` 数组里。它不是密钥,不走 DPAPI 加密。历史单条默认值 `origin` / `origin_type` / `origin_path` 会自动作为第一条预设导入。
 
@@ -365,12 +365,12 @@ def list_accessible_projects(
 单域名页新增:
 
 ```text
-源站预设: [example-bucket.s3.amazonaws.com/website/a.com (s3-website) v]
-预设搜索: [ruby-rummy                                      ] [筛选]
+源站预设: [assets.s3.amazonaws.com/website/example.com (s3-website) v]
+预设搜索: [example                                        ] [筛选]
           [保存当前源站] [删除所选源站]
-源域名:   [example-bucket.s3.amazonaws.com                     ]
+源域名:   [assets.s3.amazonaws.com                          ]
 源类型:   [s3-website                                      v]
-源路径:   [/website/ruby-rummy.com                          ]
+源路径:   [/website/example.com                             ]
 ```
 
 选择预设会回填源域名、源类型、源路径。若下拉里没有需要的配置,用户手动输入三项后点击「保存当前源站」即可新增;重复保存同一条会把它移动到列表顶部,最多保留 50 条。
@@ -408,10 +408,10 @@ def list_accessible_projects(
 ### 15.4 Commands
 
 ```powershell
-cd "D:\\进程文件\\自动化运维工具\\domainkit"
+cd "C:\\path\\to\\domainkit"
 .\\domainkit.cmd gui
-& "python" -m py_compile domainkit\\gui.py
-& "python" -m unittest discover -s tests -t . -q
+python -m py_compile domainkit\\gui.py
+python -m unittest discover -s tests -t . -q
 ```
 
 ### 15.5 Project Structure
@@ -570,3 +570,12 @@ def _format_step_status(step: StepResult) -> str:
   - Acceptance: README 描述新 GUI 使用流程;全量测试通过。
   - Verify: `python -m unittest discover -s tests -t . -q`
   - Files: `README.md`, `SPEC.md`
+# 多组凭证扩展
+
+凭证按 aws、godaddy、spaceship、gitlab 分类，各组有稳定 ID、唯一名称及字段映射。
+存储版本为 2，每类保存当前选中 ID；旧版首次加载在内存迁移，保存时备份原密文。
+写入采用同目录临时文件和原子替换，失败保留原文件。兼容读取接口返回所选组的扁平字段。
+GUI 提供搜索选择、新增、保存、另存为、重命名、删除、只读测试连接。切换完整替换该类
+字段，清除旧临时 Token；GitLab 清除旧项目列表并恢复上次项目，忽略旧凭证请求结果。
+批量复用当前账号，任务固定凭证快照；不增加逐条账号选择或凭证导出。
+验证命令：`python -B -m unittest discover -s tests -t .`。

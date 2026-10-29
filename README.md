@@ -1,4 +1,4 @@
-# domainkit
+﻿# domainkit
 
 域名上线自动化工具，版本 2.0.0。
 
@@ -8,7 +8,7 @@ DNS 服务商支持 GoDaddy 和 Spaceship，未配置时使用 GoDaddy。先自�
 
 在 Spaceship 账户的 API 管理页面创建 API Key，保存 Key 和 Secret；推荐仅授予 `dnsrecords:read`、`dnsrecords:write`，`domains:read` 可选。不需要 `domains:billing`、`domains:write`、`domains:transfer`、`contacts:write`。
 
-GUI 单域名页面选择 `spaceship`，在凭证页面填写 API Key、API Secret 和 Endpoint，点击保存凭证。勾选记住凭证时沿用 Windows DPAPI 本机加密存储；输入框默认隐藏密钥。测试连接前填写要检查的根域名。
+GUI 单域名页面选择 `spaceship`，在凭证页面的 Spaceship 区域填写 API Key、API Secret 和 Endpoint，点击“保存”并为账号命名；以后从已保存凭证下拉框选择。Windows 使用 DPAPI 本机加密存储；输入框默认隐藏密钥。测试连接前填写要检查的根域名。
 
 Endpoint 默认为官方文档地址 `https://spaceship.dev/api`，允许改为其他 HTTPS 地址。CLI 环境变量为 `SPACESHIP_API_KEY`、`SPACESHIP_API_SECRET`、`SPACESHIP_API_ENDPOINT`；非秘密配置字段为 `spaceship_endpoint`。
 
@@ -68,30 +68,32 @@ python -m domainkit.gui
 
 启动 GUI 后，点击左侧「凭证与项目」，在界面中填写凭证信息。
 
-1. 填写 AWS、GoDaddy、GitLab 的凭证
+1. 填写 AWS、GoDaddy、Spaceship、GitLab 的凭证；每家服务商账号独立保存和选择
 2. GitLab 只需要先填 `GitLab URL` 和 `Access Token`，然后点击「加载 GitLab 项目」
 3. 在「项目列表」里选择目标仓库，工具会把稳定的数字 Project ID 自动填入 `Project ID`，同时同步到单域名页的「GitLab 项目」
-4. 勾选「记住凭证(本机加密)」复选框（推荐）
-5. 点击「测试连接」验证配置是否正确
+4. 在对应服务商区域点击「保存」，为这组凭证命名
+5. 点击该区域的「测试连接」验证配置是否正确
 
 **特点：**
 - 敏感信息默认显示为 `****`，可点击「显示」复选框查看
-- 勾选「记住凭证」后，使用 **Windows DPAPI** 加密保存到本机 `%LOCALAPPDATA%\domainkit\credentials.json`，只有当前 Windows 用户能解密
-- 下次启动 GUI 自动加载，不需要重新输入
-- 保存后日志会显示掩码摘要（例如 `glpa******** (长度 20)`），确认哪些字段已生效
-- 空白字段不会写入，也不会覆盖已保存的值
+- AWS、GoDaddy、Spaceship、GitLab 分别维护多组命名凭证，可用下拉框搜索和切换
+- Windows 使用 **DPAPI** 加密保存到本机 `%LOCALAPPDATA%\domainkit\credentials.json`，只有当前 Windows 用户能解密
+- 下次启动 GUI 自动加载每类上次选择的凭证
+- 切换和保存的日志只显示字段掩码摘要，不写入密钥原文
+- 新建账号清空对应类别字段；保存只更新当前类别
 - 「加载 GitLab 项目」只读取当前 Token 可访问的项目列表，不会修改 AWS、GoDaddy 或 GitLab 项目
-- 点击「查看已保存」可查看当前本机存储的掩码摘要
-- 点击「清空所有」会同时清空输入框和本机存储
+- GitLab 每组凭证会记住上次选择的项目
 
 **安全说明：**
 - Windows DPAPI 绑定当前用户 + 当前机器，换机器或换用户无法解密
 - 明文密钥只在内存中短暂停留，文件里全是密文
-- 如果不勾选「记住凭证」，关闭程序后凭证只在当前会话生效，下次需要重新输入
+- 删除凭证只删除当前选中的一组；执行中无法切换或编辑凭证
+- 首次升级旧凭证格式时，会在首次保存新版时备份旧文件；凭证文件及备份均由 `.gitignore` 排除
+- 非 Windows 系统使用文件权限保护，但不是加密存储
 
 ### 方式二：环境变量配置
 
-三组凭证也可以通过环境变量设置。CLI 和 GUI 都会读取环境变量，但 GUI 保存的凭证优先级更高。
+四类凭证也可以通过环境变量设置。CLI 和 GUI 都会读取环境变量，已保存并选中的分类凭证优先于环境变量。
 
 ```bash
 # AWS，ACM 和 CloudFront 共用
@@ -208,7 +210,7 @@ python -m domainkit.gui
 
 1. **单域名上线**：常用字段分成「基础信息」「源站与 CloudFront」「执行选项」。输入域名后会实时显示 `www.<domain>`、GitLab 分支、CI/CD 变量名和证书域名；填完先点「预演」，确认没问题再点「执行」。执行前会列出将真实变更的服务。
 2. **批量上线**：选一个 JSON 文件，可以先「加载批次」看看解析出多少条，然后「批量预演」和「批量执行」。这一页保留原 JSON 格式，不强制通过 GUI 编辑批次文件。
-3. **凭证与项目**：填写 AWS、GoDaddy、GitLab 凭证；GitLab 可以通过「加载 GitLab 项目」从 Token 可访问项目里选择目标仓库，选中后自动回填数字 Project ID。勾选「记住凭证」后下次启动自动加载。详见「凭证配置」章节。
+3. **凭证与项目**：AWS、GoDaddy、Spaceship、GitLab 各自维护多组凭证；GitLab 可加载当前 Token 可访问的项目，选择后记入该组凭证。详见「凭证配置」章节。
 4. **日志**：底部日志会一直显示，这一页提供清空、复制、保存日志的快捷操作。
 
 单域名页有「结果摘要」表格，预演或执行后会按步骤显示 ACM 证书、DNS 验证、CloudFront、站点 DNS、裸域名 301、GitLab 分支和变量的状态。底部日志仍保留完整原文，内容跟 CLI 一致。
@@ -392,7 +394,7 @@ ACM 返回的验证记录名是完全限定域名，比如 `_9c8f1a.livingtechno
 
 ### 尚未在真实环境验证过
 
-全部核心逻辑由 152 个单元测试覆盖，HTTP 层用假传输层拦下所有请求，SigV4 签名对过 AWS 官方测试向量。工具已经在你的真实 AWS、GoDaddy、GitLab 环境里跑通过域名上线流程；但 GoDaddy 主域名转发 API 在当前账号/域名上返回过 404，所以 `apex-forward` 可能仍需要去 GoDaddy 控制台手动设置。第一次给新仓库或新配置使用时，仍建议先跑 `plan` 或 GUI「预演」，确认资源复用和创建计划没问题再执行。
+全部核心逻辑由 185 个单元测试覆盖，HTTP 层用假传输层拦下所有请求，SigV4 签名对过 AWS 官方测试向量。公开测试不会创建云资源、写 DNS 或修改 GitLab。第一次给新仓库或新配置使用时，建议先跑 `plan` 或 GUI「预演」，确认资源复用和创建计划没问题再执行。GoDaddy 主域名转发 API 在部分账号或域名上可能不可用，此时 `apex-forward` 需要到 GoDaddy 控制台手动设置。
 
 ### GoDaddy 生产 API 的门槛
 

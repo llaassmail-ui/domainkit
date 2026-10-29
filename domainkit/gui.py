@@ -1,4 +1,4 @@
-"""Tkinter GUI for domainkit.
+﻿"""Tkinter GUI for domainkit.
 
 Usage:
     python -m domainkit.gui
@@ -14,9 +14,10 @@ import json
 import os
 import queue
 import threading
+import copy
 import tkinter as tk
 from pathlib import Path
-from tkinter import ttk, filedialog, messagebox, scrolledtext
+from tkinter import ttk, filedialog, messagebox, scrolledtext, simpledialog
 from typing import Any, Dict, List, Tuple
 
 from .aws import DistributionOptions, OriginSpec, ORIGIN_TYPES
@@ -27,13 +28,9 @@ from .errors import DomainKitError
 from .gitlab import GitLabClient, normalize_project_id
 from .naming import branch_name, normalize_domain, service_domain, variable_key
 from .vault import (
-    CREDENTIAL_KEYS,
-    apply_to_env,
-    delete_credentials,
-    describe,
-    load_credentials,
-    save_credentials,
-    store_path,
+    CREDENTIAL_KEYS, PROFILE_KEYS, apply_to_env, describe, empty_profiles,
+    load_credentials, load_profiles, profile_current, put_profile,
+    remove_profile, save_profiles, store_path,
 )
 from .workflow import DEFAULT_CERTIFICATE_TIMEOUT, Outcome
 
@@ -185,13 +182,17 @@ class DomainKitGUI:
         self.origin_presets: List[Dict[str, str]] = []
         self.origin_presets_by_label: Dict[str, Dict[str, str]] = {}
         self.stored: Dict[str, str] = {}
+        self.profile_store = empty_profiles()
+        self._profile_store_error = False
         self.gitlab_projects_by_label: Dict[str, Dict[str, Any]] = {}
         self._load_error = ""
         self._defaults_load_error = ""
         try:
+            self.profile_store = load_profiles(path=self.store_path)
             self.stored = load_credentials(path=self.store_path)
-        except DomainKitError as exc:
+        except (DomainKitError, OSError) as exc:
             self._load_error = str(exc)
+            self._profile_store_error = True
         try:
             self.defaults = self._load_defaults()
             self.origin_presets = _load_origin_presets(self.defaults)
@@ -199,11 +200,16 @@ class DomainKitGUI:
             self._defaults_load_error = str(exc)
         # Saved credentials win over inherited environment variables: the user
         # typed them here on purpose, and blanks must not overwrite them.
-        for key, value in self.stored.items():
-            if value:
-                self.env[key] = value
+        for category, keys in PROFILE_KEYS.items():
+            if self.profile_store['selected'][category] is not None:
+                apply_to_env(self.env, self.stored, keys)
 
         self._build_ui()
+        for category in PROFILE_KEYS:
+            if self.profile_store['selected'][category] is not None:
+                self._apply_profile_values(category, self._profile_values(category))
+                profile = profile_current(self.profile_store, category)
+                self._log_profile(category, profile['name'], profile['values'])
         self._check_log_queue()
         if self._load_error:
             self._log("读取已保存凭证失败: {0}".format(self._load_error))
@@ -439,11 +445,7 @@ class DomainKitGUI:
 
         info_frame = ttk.LabelFrame(form, text="说明", padding=10)
         info_frame.grid(row=0, column=0, columnspan=3, sticky=tk.EW, pady=(0, 10))
-        info_text = (
-            "在这里配置 AWS、GoDaddy 和 GitLab 的凭证。\n"
-            "勾选「记住凭证」后点击「保存凭证」,会用 Windows DPAPI 按当前用户加密保存到本机,\n"
-            "下次启动自动加载,日志只显示掩码摘要。留空的字段不会写入,也不会覆盖已保存的值。"
-        )
+        info_text = "AWS / GoDaddy / Spaceship / GitLab"
         ttk.Label(info_frame, text=info_text, justify=tk.LEFT).pack()
 
         row = 1
@@ -454,7 +456,7 @@ class DomainKitGUI:
         aws_row = 0
         ttk.Label(aws_frame, text="Access Key ID:").grid(row=aws_row, column=0, sticky=tk.W, pady=3)
         self.aws_key_var = tk.StringVar(value=self.env.get("AWS_ACCESS_KEY_ID", ""))
-        self.aws_key_entry = ttk.Entry(aws_frame, textvariable=self.aws_key_var, width=50)
+        self.aws_key_entry = ttk.Entry(aws_frame, textvariable=self.aws_key_var, width=50, show='*')
         self.aws_key_entry.grid(row=aws_row, column=1, sticky=tk.EW, pady=3, padx=5)
         self.aws_key_show_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(aws_frame, text="显示", variable=self.aws_key_show_var, 
@@ -587,22 +589,251 @@ class DomainKitGUI:
         ttk.Label(gitlab_frame, text="Project ID:").grid(row=gl_row, column=0, sticky=tk.W, pady=3)
         self.gl_project_var = tk.StringVar(value=self.env.get("GITLAB_PROJECT_ID", ""))
         self.gl_project_var.trace_add("write", lambda *_: self._update_project_status())
-        ttk.Entry(gitlab_frame, textvariable=self.gl_project_var, width=50).grid(
+        self.gl_project_entry = ttk.Entry(gitlab_frame, textvariable=self.gl_project_var, width=50)
+        self.gl_project_entry.grid(
             row=gl_row, column=1, sticky=tk.EW, pady=3, padx=5, columnspan=2
         )
+        self.gl_project_entry.bind('<Return>', self._remember_manual_gitlab_project)
+        self.gl_project_entry.bind('<FocusOut>', self._remember_manual_gitlab_project)
         gitlab_frame.columnconfigure(1, weight=1)
+        self._build_profile_controls({"aws": aws_frame, "godaddy": godaddy_frame,
+                                      "spaceship": spaceship_frame, "gitlab": gitlab_frame})
 
-        btn_frame = ttk.Frame(form)
-        btn_frame.grid(row=row, column=0, columnspan=3, pady=15)
-        self.remember_var = tk.BooleanVar(value=bool(self.stored))
-        ttk.Checkbutton(btn_frame, text="记住凭证(本机加密)", variable=self.remember_var).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="保存凭证", command=self._save_credentials).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="测试连接", command=self._doctor_check).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="查看已保存", command=self._show_saved).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="清空所有", command=self._clear_credentials).pack(side=tk.LEFT, padx=5)
+        ttk.Label(form, text="凭证仅在本机保存；每类账号请使用各自区域的操作按钮。").grid(
+            row=row, column=0, columnspan=3, pady=10
+        )
 
         form.columnconfigure(0, weight=0)
         form.columnconfigure(1, weight=1)
+
+    def _profile_vars(self):
+        return dict(zip(CREDENTIAL_KEYS, (self.aws_key_var, self.aws_secret_var, self.aws_token_var,
+            self.gd_key_var, self.gd_secret_var, self.ss_key_var, self.ss_secret_var,
+            self.ss_endpoint_var, self.gl_url_var, self.gl_project_var, self.gl_token_var)))
+
+    def _build_profile_controls(self, frames):
+        self.profile_store_error = self._profile_store_error
+        self.profile_choices, self.profile_combos, self.profile_baselines = {}, {}, {}
+        self.profile_drafts = set()
+        for category, frame in frames.items():
+            bar = ttk.Frame(frame)
+            bar.grid(row=frame.grid_size()[1], column=0, columnspan=3, sticky=tk.EW, pady=8)
+            bar.columnconfigure(1, weight=1)
+            ttk.Label(bar, text='已保存凭证').grid(row=0, column=0, padx=4)
+            choice = tk.StringVar()
+            combo = ttk.Combobox(bar, textvariable=choice)
+            combo.grid(row=0, column=1, sticky=tk.EW, columnspan=5)
+            self.profile_choices[category], self.profile_combos[category] = choice, combo
+            combo.bind('<KeyRelease>', lambda event, c=category: self._filter_profiles(c))
+            combo.bind('<<ComboboxSelected>>', lambda event, c=category: self._switch_profile(c))
+            commands = [('新增', lambda c=category: self._new_profile(c)),
+                        ('保存', lambda c=category: self._save_profile(c)),
+                        ('另存为', lambda c=category: self._save_profile(c, as_new=True)),
+                        ('重命名', lambda c=category: self._rename_profile(c)),
+                        ('删除', lambda c=category: self._delete_profile(c)),
+                        ('测试连接', lambda c=category: self._test_profile(c))]
+            for index, (label, command) in enumerate(commands):
+                ttk.Button(bar, text=label, command=command).grid(row=1 + index // 3,
+                    column=(index % 3) * 2, columnspan=2, sticky=tk.EW, pady=2)
+            self.profile_baselines[category] = self._profile_values(category)
+            self._refresh_profiles(category)
+
+    def _profile_values(self, category):
+        variables = self._profile_vars()
+        return {k: variables[k].get().strip() for k in PROFILE_KEYS[category]}
+
+    def _refresh_profiles(self, category):
+        if category in self.profile_drafts:
+            self.profile_choices[category].set('')
+            self.profile_combos[category].configure(values=[p['name'] for p in self.profile_store['profiles'][category]])
+            return
+        current = profile_current(self.profile_store, category)
+        self.profile_choices[category].set(current['name'] if current else '')
+        self.profile_combos[category].configure(values=[p['name'] for p in self.profile_store['profiles'][category]])
+
+    def _filter_profiles(self, category):
+        query = self.profile_choices[category].get().casefold()
+        self.profile_combos[category].configure(values=[p['name'] for p in
+            self.profile_store['profiles'][category] if query in p['name'].casefold()])
+
+    def _persist_profiles(self, candidate):
+        if self.profile_store_error:
+            messagebox.showerror('保存失败', '原凭证文件读取失败，请先修复文件后重启，避免覆盖原数据。')
+            return False
+        try:
+            save_profiles(candidate, path=self.store_path)
+        except (DomainKitError, OSError) as exc:
+            messagebox.showerror('保存失败', str(exc))
+            return False
+        self.profile_store = candidate
+        return True
+
+    def _log_profile(self, category, name, values):
+        summary = describe(values, PROFILE_KEYS[category])
+        shown = ', '.join('{0}={1}'.format(key, value) for key, value in summary.items())
+        self._log('凭证 {0} / {1}: {2}'.format(category, name, shown))
+
+    def _apply_profile_values(self, category, values):
+        values = dict(values)
+        if category == 'spaceship':
+            values.setdefault('SPACESHIP_API_ENDPOINT', 'https://spaceship.dev/api')
+        for key, var in self._profile_vars().items():
+            if key in PROFILE_KEYS[category]:
+                var.set(values.get(key, ''))
+        apply_to_env(self.env, values, PROFILE_KEYS[category])
+        apply_to_env(os.environ, values, PROFILE_KEYS[category])
+        if category == 'gitlab':
+            self.gitlab_projects_by_label = {}
+            self.gl_project_choice_var.set('')
+            self.gl_project_search_var.set('')
+            self.gl_project_combo.configure(values=[])
+            if hasattr(self, 'project_var'):
+                self.project_var.set(values.get('GITLAB_PROJECT_ID', ''))
+        self._mark_service_status(category, 'unknown')
+        self.profile_baselines[category] = self._profile_values(category)
+        self._refresh_profiles(category)
+
+    def _confirm_profile_edits(self, category):
+        if self._profile_values(category) == self.profile_baselines[category]:
+            return True
+        answer = messagebox.askyesnocancel('未保存的修改', '是否保存后切换？\n是：保存并切换；否：放弃修改；取消：保留当前输入。')
+        if answer is True:
+            return self._save_profile(category)
+        if answer is False:
+            current = profile_current(self.profile_store, category)
+            self.profile_drafts.discard(category)
+            self._apply_profile_values(category, current['values'] if current else
+                                       ({'SPACESHIP_API_ENDPOINT': 'https://spaceship.dev/api'}
+                                        if category == 'spaceship' else {}))
+            return True
+        return False
+
+    def _save_profile(self, category, as_new=False):
+        if self.running:
+            return False
+        current = profile_current(self.profile_store, category)
+        is_new = as_new or category in self.profile_drafts
+        name = current['name'] if current and not is_new else simpledialog.askstring('保存凭证', '凭证名称：', parent=self.root)
+        if name is None:
+            return False
+        candidate = copy.deepcopy(self.profile_store)
+        values = self._profile_values(category)
+        try:
+            put_profile(candidate, category, name, values,
+                        profile_id=current['id'] if current and not is_new else None)
+        except (DomainKitError, OSError) as exc:
+            messagebox.showerror('保存失败', str(exc))
+            return False
+        if not self._persist_profiles(candidate):
+            return False
+        self.profile_drafts.discard(category)
+        self._apply_profile_values(category, values)
+        self._log('已保存凭证：{0} / {1}'.format(category, name))
+        self._log_profile(category, name, values)
+        return True
+
+    def _switch_profile(self, category):
+        selected = self.profile_choices[category].get()
+        target = next((p for p in self.profile_store['profiles'][category] if p['name'] == selected), None)
+        if self.running or target is None or not self._confirm_profile_edits(category):
+            self._refresh_profiles(category)
+            return
+        target = next((p for p in self.profile_store['profiles'][category] if p['id'] == target['id']), None)
+        if target is None:
+            self._refresh_profiles(category)
+            return
+        candidate = copy.deepcopy(self.profile_store)
+        candidate['selected'][category] = target['id']
+        if self._persist_profiles(candidate):
+            self.profile_drafts.discard(category)
+            self._apply_profile_values(category, target['values'])
+            self._log('已切换凭证：{0} / {1}'.format(category, target['name']))
+            self._log_profile(category, target['name'], target['values'])
+        else:
+            self._refresh_profiles(category)
+
+    def _new_profile(self, category):
+        if self.running or not self._confirm_profile_edits(category):
+            return
+        self.profile_drafts.add(category)
+        self._apply_profile_values(category, {'SPACESHIP_API_ENDPOINT': 'https://spaceship.dev/api'}
+                                   if category == 'spaceship' else {})
+
+    def _rename_profile(self, category):
+        if self.running or category in self.profile_drafts or not self._confirm_profile_edits(category):
+            return
+        current = profile_current(self.profile_store, category)
+        if not current:
+            return
+        name = simpledialog.askstring('重命名', '凭证名称：', initialvalue=current['name'], parent=self.root)
+        if name is None:
+            return
+        candidate = copy.deepcopy(self.profile_store)
+        try:
+            put_profile(candidate, category, name, current['values'], profile_id=current['id'])
+        except DomainKitError as exc:
+            messagebox.showerror('重命名失败', str(exc))
+            return
+        if self._persist_profiles(candidate):
+            self.profile_baselines[category] = self._profile_values(category)
+            self._refresh_profiles(category)
+
+    def _delete_profile(self, category):
+        if (self.running or category in self.profile_drafts or not self._confirm_profile_edits(category)):
+            return
+        current = profile_current(self.profile_store, category)
+        if (not current or
+                not messagebox.askyesno('删除凭证', '仅删除本机凭证“{0}”？'.format(current['name']))):
+            return
+        candidate = copy.deepcopy(self.profile_store)
+        remove_profile(candidate, category, current['id'])
+        if self._persist_profiles(candidate):
+            self._apply_profile_values(category, {})
+
+    def _test_profile(self, category):
+        if self.running:
+            return
+        profile = profile_current(self.profile_store, category)
+        profile_name = profile['name'] if profile else '新凭证（未保存）'
+        self._log('开始只读连接测试：{0} / {1}'.format(category, profile_name))
+        self._log_profile(category, profile_name, self._profile_values(category))
+        environment = dict(self.env)
+        apply_to_env(environment, self._profile_values(category), PROFILE_KEYS[category])
+        domain = self.domain_var.get().strip()
+        if category == 'spaceship' and not domain:
+            domain = simpledialog.askstring('测试 Spaceship', '用于只读检查的 DNS 根域名：', parent=self.root)
+            if not domain:
+                return
+        def task():
+            try:
+                from .aws import AcmClient, CloudFrontClient
+                from .sigv4 import Credentials
+                from .godaddy import GoDaddyClient
+                from .spaceship import SpaceshipClient
+                if category == 'aws':
+                    credentials = Credentials.from_env(environment)
+                    AcmClient(credentials).list_certificates()
+                    CloudFrontClient(credentials).list_distributions()
+                elif category == 'godaddy':
+                    GoDaddyClient.from_env(environment).list_domains()
+                elif category == 'spaceship':
+                    SpaceshipClient.from_env(environment).get_records(domain)
+                else:
+                    GitLabClient.for_instance(environment.get('GITLAB_URL') or 'https://gitlab.com',
+                                              environment.get('GITLAB_TOKEN', '')).get_current_user()
+                self._log(category + '：只读连接检查通过')
+                self.root.after(0, lambda: self._mark_service_status(category, 'ok'))
+            except Exception as exc:
+                detail = str(exc)
+                for key in PROFILE_KEYS[category]:
+                    value = environment.get(key, '')
+                    if value and ('KEY' in key or 'TOKEN' in key or 'SECRET' in key):
+                        detail = detail.replace(value, '********')
+                self._log(category + '：检查失败：' + detail)
+                self.root.after(0, lambda: self._mark_service_status(category, 'err'))
+            finally:
+                self._finish()
+        self._start(task)
 
     def _toggle_show(self, entry: ttk.Entry, var: tk.BooleanVar) -> None:
         """Toggle password visibility."""
@@ -610,40 +841,6 @@ class DomainKitGUI:
             entry.config(show="")
         else:
             entry.config(show="*")
-
-    def _save_credentials(self) -> None:
-        """Save credentials to environment variables for the current session."""
-        values = self._collect_credentials()
-        provider = self.dns_provider_var.get().upper()
-        missing = [key for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
-                                   provider + "_API_KEY", provider + "_API_SECRET",
-                                   "GITLAB_PROJECT_ID", "GITLAB_TOKEN") if not values.get(key)]
-
-        apply_to_env(self.env, values)
-        apply_to_env(os.environ, values)  # type: ignore[arg-type]
-
-        self._log("=== 凭证已应用到当前会话 ===")
-        for key, shown in describe(values).items():
-            self._log("  {0:<22} {1}".format(key, shown))
-
-        note = ""
-        if self.remember_var.get():
-            try:
-                saved_to = save_credentials(values, path=self.store_path)
-                self.stored = {k: v for k, v in values.items() if v}
-                self._log("已加密保存到 {0}".format(saved_to))
-                note = "\n已加密保存到本机,下次启动自动加载。"
-            except DomainKitError as exc:
-                self._log("保存到本机失败: {0}".format(exc))
-                note = "\n注意: 写入本机存储失败,本次仅在当前会话生效。"
-        else:
-            note = "\n未勾选「记住凭证」,关闭程序后需要重新输入。"
-
-        if missing:
-            self._log("以下字段为空,已跳过(不会覆盖原有值): {0}".format(", ".join(missing)))
-            note += "\n\n仍为空的字段: {0}".format(", ".join(missing))
-
-        messagebox.showinfo("已保存", "凭证已应用。{0}\n\n可以点击「测试连接」验证配置。".format(note))
 
     def _collect_credentials(self) -> Dict[str, str]:
         """Read the form, normalizing the GitLab fields as we go."""
@@ -668,57 +865,6 @@ class DomainKitGUI:
             "GITLAB_PROJECT_ID": project_id,
             "GITLAB_TOKEN": self.gl_token_var.get().strip(),
         }
-
-    def _show_saved(self) -> None:
-        """Print the masked contents of the encrypted store."""
-        self._log("=== 已保存的凭证 ({0}) ===".format(self.store_path))
-        try:
-            stored = load_credentials(path=self.store_path)
-        except DomainKitError as exc:
-            self._log("读取失败: {0}".format(exc))
-            return
-        if not stored:
-            self._log("本机没有保存任何凭证")
-            return
-        for key, shown in describe(stored).items():
-            self._log("  {0:<22} {1}".format(key, shown))
-
-    def _clear_credentials(self) -> None:
-        """Clear all credential fields."""
-        if not messagebox.askyesno(
-            "确认",
-            "清空所有输入框,并删除本机已加密保存的凭证?\n此操作不可撤销。",
-        ):
-            return
-
-        self.aws_key_var.set("")
-        self.aws_secret_var.set("")
-        self.aws_token_var.set("")
-        self.gd_key_var.set("")
-        self.gd_secret_var.set("")
-        self.ss_key_var.set("")
-        self.ss_secret_var.set("")
-        self.ss_endpoint_var.set("https://spaceship.dev/api")
-        self.gl_url_var.set("")
-        self.gl_project_var.set("")
-        self.gl_project_search_var.set("")
-        self.gl_project_choice_var.set("")
-        self.gl_project_combo.configure(values=[])
-        self.gitlab_projects_by_label = {}
-        self.gl_token_var.set("")
-        self.remember_var.set(False)
-
-        for key in CREDENTIAL_KEYS:
-            self.env.pop(key, None)
-            os.environ.pop(key, None)
-        self.stored = {}
-
-        try:
-            removed = delete_credentials(path=self.store_path)
-        except OSError as exc:
-            self._log("删除本机凭证文件失败: {0}".format(exc))
-            removed = False
-        self._log("已清空所有凭证字段{0}".format("并删除本机保存的凭证" if removed else ""))
 
     def _build_single_tab(self) -> None:
         provider_bar = ttk.Frame(self.single_frame, padding=10)
@@ -1039,6 +1185,19 @@ class DomainKitGUI:
     def _set_running(self, state: bool) -> None:
         """Only ever runs on the Tk main thread; workers go through _finish."""
         self.running = state
+        if state:
+            self._locked_widgets = []
+            def lock(parent):
+                for widget in parent.winfo_children():
+                    if isinstance(widget, (ttk.Entry, ttk.Combobox, ttk.Button, ttk.Checkbutton)):
+                        self._locked_widgets.append((widget, str(widget.cget('state'))))
+                        widget.configure(state='disabled')
+                    lock(widget)
+            lock(self.credentials_frame)
+        else:
+            for widget, previous in getattr(self, '_locked_widgets', []):
+                widget.configure(state=previous)
+            self._locked_widgets = []
         btn_state = tk.DISABLED if state else tk.NORMAL
         if hasattr(self, "run_status_var"):
             self.run_status_var.set(_status_text("running" if state else "idle"))
@@ -1108,7 +1267,9 @@ class DomainKitGUI:
                 username = user.get("username") or user.get("name") or "unknown"
                 self._log("GitLab token 可用: {0}".format(username))
                 projects = client.list_accessible_projects(search=search)
-                self.root.after(0, lambda: self._apply_gitlab_projects(projects))
+                self.root.after(0, lambda: self._apply_gitlab_projects(projects)
+                    if (self.gl_url_var.get().strip().rstrip('/') or 'https://gitlab.com',
+                        self.gl_token_var.get().strip()) == (base_url, token) else None)
             except Exception as exc:  # noqa: BLE001 - turn API failures into actionable GUI logs
                 self._log("加载 GitLab 项目失败: {0}".format(self._friendly_gitlab_error(exc)))
             finally:
@@ -1143,7 +1304,14 @@ class DomainKitGUI:
             self.gl_project_choice_var.set("")
             self._log("没有找到可访问项目;换搜索词或检查 token 权限")
             return
-        self.gl_project_choice_var.set(labels[0])
+        previous = self.gl_project_var.get().strip()
+        matched = next((label for label, project in self.gitlab_projects_by_label.items()
+                        if previous in (str(project.get('id')), project.get('path_with_namespace'))), None)
+        if previous and not matched:
+            self.gl_project_choice_var.set('')
+            self._log('上次项目不在当前列表中，请手动选择。')
+            return
+        self.gl_project_choice_var.set(matched or labels[0])
         self._select_gitlab_project()
         self._log("已加载 {0} 个 GitLab 项目".format(len(labels)))
 
@@ -1159,38 +1327,70 @@ class DomainKitGUI:
             self.project_var.set(project_id)
         self.env["GITLAB_PROJECT_ID"] = project_id
         os.environ["GITLAB_PROJECT_ID"] = project_id
+        if hasattr(self, 'profile_store'):
+            current = profile_current(self.profile_store, 'gitlab')
+            if (current and 'gitlab' not in self.profile_drafts and
+                    all(self._profile_values('gitlab').get(k, '') == current['values'].get(k, '')
+                        for k in ('GITLAB_URL', 'GITLAB_TOKEN'))):
+                candidate = copy.deepcopy(self.profile_store)
+                profile_current(candidate, 'gitlab')['values']['GITLAB_PROJECT_ID'] = project_id
+                if self._persist_profiles(candidate):
+                    self.profile_baselines['gitlab'] = self._profile_values('gitlab')
         self._update_project_status()
         self._log("已选择 GitLab 项目: {0}".format(self.gl_project_choice_var.get()))
 
-    def _refresh_dns_credentials(self) -> None:
-        if self.dns_provider_var.get() == "spaceship":
-            self.godaddy_credentials_frame.grid_remove()
-            self.spaceship_credentials_frame.grid()
+    def _remember_manual_gitlab_project(self, _event=None) -> None:
+        project_id = normalize_project_id(self.gl_project_var.get())
+        self.gl_project_var.set(project_id)
+        self.project_var.set(project_id)
+        apply_to_env(self.env, {'GITLAB_PROJECT_ID': project_id}, ('GITLAB_PROJECT_ID',))
+        apply_to_env(os.environ, {'GITLAB_PROJECT_ID': project_id}, ('GITLAB_PROJECT_ID',))
+        if self.running or 'gitlab' in self.profile_drafts:
+            return
+        current = profile_current(self.profile_store, 'gitlab')
+        if (not current or any(self._profile_values('gitlab').get(key, '') != current['values'].get(key, '')
+                               for key in ('GITLAB_URL', 'GITLAB_TOKEN')) or
+                current['values'].get('GITLAB_PROJECT_ID', '') == project_id):
+            return
+        candidate = copy.deepcopy(self.profile_store)
+        profile = profile_current(candidate, 'gitlab')
+        if project_id:
+            profile['values']['GITLAB_PROJECT_ID'] = project_id
         else:
-            self.spaceship_credentials_frame.grid_remove()
-            self.godaddy_credentials_frame.grid()
+            profile['values'].pop('GITLAB_PROJECT_ID', None)
+        if self._persist_profiles(candidate):
+            self.profile_baselines['gitlab']['GITLAB_PROJECT_ID'] = project_id
+
+    def _refresh_dns_credentials(self) -> None:
+        # Both providers keep independent profiles, even when one is not active.
+        self.godaddy_credentials_frame.grid()
+        self.spaceship_credentials_frame.grid()
 
     def _doctor_check(self) -> None:
         if self.running:
             return
+        environment = dict(self.env)
         values = self._collect_credentials()
-        apply_to_env(self.env, values)
-        apply_to_env(os.environ, values)  # type: ignore[arg-type]
+        apply_to_env(environment, values)
+        apply_to_env(os.environ, values)
+        project = self.project_var.get().strip() or self.gl_project_var.get().strip() or None
+        domain = self.domain_var.get().strip() or None
+        dns_provider = self.dns_provider_var.get()
 
         def task():
             self._log("=== 开始凭证自检 ===")
             try:
                 args = argparse.Namespace(
                     json=False,
-                    project=self.project_var.get().strip() or self.gl_project_var.get().strip() or None,
+                    project=project,
                     profile=None,
                     prefix=None,
-                    domain=self.domain_var.get().strip() or None,
+                    domain=domain,
                 )
                 out = io.StringIO()
-                settings = Settings.load(env=self.env)
-                settings.dns_provider = self.dns_provider_var.get()
-                cmd_doctor(args, settings, out, self.env)
+                settings = Settings.load(env=environment)
+                settings.dns_provider = dns_provider
+                cmd_doctor(args, settings, out, environment)
                 for line in out.getvalue().splitlines():
                     self._log(line)
                     self.root.after(0, lambda value=line: self._update_status_from_doctor_line(value))
@@ -1227,49 +1427,61 @@ class DomainKitGUI:
             messagebox.showwarning("警告", "创建 CloudFront 分配需要填写源域名,或者在高级选项里填写已有 Distribution ID")
             return
 
+        environment = dict(self.env)
+        apply_to_env(environment, self._collect_credentials())
+        selected_provider = self.dns_provider_var.get()
+        selected_project = self.project_var.get().strip()
+        selected_base_branch = self.base_branch_var.get().strip()
+        create_distribution = self.create_cf_var.get()
+        wait_for_certificate = self.wait_cert_var.get()
+        spa = self.spa_var.get()
+        skip_dns = self.skip_dns_var.get()
+        skip_site_dns = self.skip_site_dns_var.get()
+        skip_gitlab = self.skip_gitlab_var.get()
+        origin_domain = self.origin_var.get().strip()
+        origin_type = self.origin_type_var.get()
+        origin_path = self.origin_path_var.get().strip()
+        distribution_id = self.dist_id_var.get().strip()
         def task():
             mode = "预演" if dry_run else "执行"
             self._log("=== {0}: {1} ===".format(mode, domain))
             self.root.after(0, self._clear_result_summary)
             try:
-                settings = Settings.load(env=self.env)
-                settings.dns_provider = self.dns_provider_var.get()
-                project = self.project_var.get().strip()
+                settings = Settings.load(env=environment)
+                settings.dns_provider = selected_provider
+                project = selected_project
                 if project:
                     settings.gitlab_project = project
-                base_branch = self.base_branch_var.get().strip()
+                base_branch = selected_base_branch
                 if base_branch:
                     settings.base_branch = base_branch
 
-                onboarder = _make_onboarder(settings, self.env, need_write=not dry_run, log=self._log)
+                onboarder = _make_onboarder(settings, environment, need_write=not dry_run, log=self._log)
 
                 origin = None
-                origin_str = self.origin_var.get().strip()
-                if origin_str:
-                    origin_path = self.origin_path_var.get().strip()
+                if origin_domain:
                     origin = OriginSpec(
-                        domain=origin_str,
-                        type=self.origin_type_var.get(),
+                        domain=origin_domain,
+                        type=origin_type,
                         path=origin_path,
                     )
 
-                options = DistributionOptions(spa=self.spa_var.get())
+                options = DistributionOptions(spa=spa)
 
                 kwargs: Dict[str, Any] = {
                     "dry_run": dry_run,
-                    "wait_for_certificate": self.wait_cert_var.get(),
+                    "wait_for_certificate": wait_for_certificate,
                     "certificate_timeout": DEFAULT_CERTIFICATE_TIMEOUT,
-                    "create_distribution": self.create_cf_var.get(),
-                    "skip_dns": self.skip_dns_var.get(),
-                    "skip_site_dns": self.skip_site_dns_var.get(),
-                    "skip_gitlab": self.skip_gitlab_var.get(),
+                    "create_distribution": create_distribution,
+                    "skip_dns": skip_dns,
+                    "skip_site_dns": skip_site_dns,
+                    "skip_gitlab": skip_gitlab,
                     "options": options,
                 }
                 if origin:
                     kwargs["origin"] = origin
-                dist_id = self.dist_id_var.get().strip()
-                if dist_id:
-                    kwargs["distribution_id"] = dist_id
+                if distribution_id:
+                    kwargs["distribution_id"] = distribution_id
 
                 report = onboarder.run(domain, **kwargs)
                 self._log("分支: {0}, 变量: {1}".format(report.plan.branch, report.plan.variable_key))
@@ -1301,14 +1513,24 @@ class DomainKitGUI:
             messagebox.showwarning("警告", "请先选择批次文件")
             return
 
+        environment = dict(self.env)
+        apply_to_env(environment, self._collect_credentials())
+        selected_provider = self.dns_provider_var.get()
+        selected_project = self.project_var.get().strip()
+        selected_base_branch = self.base_branch_var.get().strip()
         def task():
             mode = "预演" if dry_run else "执行"
             self._log("=== 批量{0} ===".format(mode))
             try:
                 def factory(settings: Settings):
-                    return _make_onboarder(settings, self.env, need_write=not dry_run, log=self._log)
+                    return _make_onboarder(settings, environment, need_write=not dry_run, log=self._log)
 
-                base_settings = Settings.load(env=self.env)
+                base_settings = Settings.load(env=environment)
+                base_settings.dns_provider = selected_provider
+                if selected_project:
+                    base_settings.gitlab_project = selected_project
+                if selected_base_branch:
+                    base_settings.base_branch = selected_base_branch
                 result = run_batch(
                     Path(path_str),
                     onboarder_factory=factory,

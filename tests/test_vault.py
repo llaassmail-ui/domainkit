@@ -101,6 +101,7 @@ class VaultTests(unittest.TestCase):
                 "GITLAB_URL": "https://doc-git.example.com",
                 "GITLAB_PROJECT_ID": "group/repo",
                 "GITLAB_TOKEN": "glpat-abcdefghijk",
+                "AWS_ACCESS_KEY_ID": "AKIAEXAMPLEKEYTAIL",
                 "AWS_SECRET_ACCESS_KEY": "very-secret-value",
             }
         )
@@ -108,6 +109,7 @@ class VaultTests(unittest.TestCase):
         self.assertEqual(summary["GITLAB_PROJECT_ID"], "group/repo")
         self.assertNotIn("abcdefghijk", summary["GITLAB_TOKEN"])
         self.assertNotIn("very-secret-value", summary["AWS_SECRET_ACCESS_KEY"])
+        self.assertNotIn("EXAMPLEKEYTAIL", summary["AWS_ACCESS_KEY_ID"])
         self.assertEqual(summary["GODADDY_API_KEY"], "(未设置)")
 
     def test_store_path_honours_explicit_override(self) -> None:
