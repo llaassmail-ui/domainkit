@@ -1,55 +1,89 @@
 @echo off
-rem domainkit launcher. No install needed.
-rem
-rem This machine has no usable Python on PATH, so the launcher points at the
-rem Python 3.12 runtime that ships with Codex. Comments are ASCII on purpose:
-rem cmd.exe reads batch files in the console code page, and UTF-8 text here
-rem would be mangled.
+rem domainkit launcher. Comments are ASCII on purpose because cmd.exe reads
+rem batch files in the console code page.
 rem
 rem Usage:
 rem   domainkit.cmd names livingtechnology.com
 rem   domainkit.cmd gui
 rem   domainkit.cmd plan example.com --create-distribution --origin example.s3-website-us-east-1.amazonaws.com
 
-setlocal
+setlocal EnableExtensions
 
-set "PY_EXE="
-set "PY_ARGS="
+set "CODEX_PY=%USERPROFILE%\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
+set "PY="
 
-if exist "%USERPROFILE%\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" set "PY_EXE=%USERPROFILE%\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
-if not defined PY_EXE if exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" set "PY_EXE=%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
-if not defined PY_EXE if exist "%LOCALAPPDATA%\Programs\Python\Python311\python.exe" set "PY_EXE=%LOCALAPPDATA%\Programs\Python\Python311\python.exe"
-if not defined PY_EXE for /f "delims=" %%I in ('where py 2^>nul') do if not defined PY_EXE set "PY_EXE=py" & set "PY_ARGS=-3"
-if not defined PY_EXE for /f "delims=" %%I in ('where python 2^>nul') do if not defined PY_EXE set "PY_EXE=python"
-if not defined PY_EXE (
-    echo No usable Python found.
-    echo Install Python 3.9+ or edit this file to point at your interpreter.
-    pause
+rem Prefer a regular Python installation. The Codex runtime is only a fallback.
+for %%V in (314 313 312 311 310 39) do (
+    if not defined PY (
+        if exist "%LOCALAPPDATA%\Programs\Python\Python%%V\python.exe" (
+            set "PY=%LOCALAPPDATA%\Programs\Python\Python%%V\python.exe"
+        )
+    )
+)
+for %%V in (314 313 312 311 310 39) do (
+    if not defined PY (
+        if exist "%ProgramFiles%\Python%%V\python.exe" (
+            set "PY=%ProgramFiles%\Python%%V\python.exe"
+        )
+    )
+)
+if not defined PY (
+    for /f "usebackq delims=" %%P in (`py -3 -c "import sys; print(sys.executable)" 2^>nul`) do (
+        if not defined PY set "PY=%%P"
+    )
+)
+if not defined PY if exist "%CODEX_PY%" set "PY=%CODEX_PY%"
+if not exist "%PY%" (
+    echo No usable Python found. Install Python 3.9+ or edit the PY variable in this file.
     exit /b 1
 )
 
+if defined DOMAINKIT_TCL_LIBRARY set "TCL_LIBRARY=%DOMAINKIT_TCL_LIBRARY%"
+if defined DOMAINKIT_TK_LIBRARY set "TK_LIBRARY=%DOMAINKIT_TK_LIBRARY%"
+
 rem Make the domainkit package importable from any working directory.
 set "PYTHONPATH=%~dp0;%PYTHONPATH%"
+set "PYTHONUTF8=1"
 
+rem Double-clicking the launcher opens the GUI; any CLI argument keeps CLI mode.
 if "%~1"=="" goto :run_gui
 if /i "%~1"=="gui" goto :run_gui
 
-:run_cli
-"%PY_EXE%" %PY_ARGS% -m domainkit %*
-set "RC=%ERRORLEVEL%"
-if not "%RC%"=="0" (
-    echo.
-    echo domainkit exited with code %RC%.
-    pause
-)
-exit /b %RC%
+"%PY%" -m domainkit %*
+exit /b %ERRORLEVEL%
 
 :run_gui
-"%PY_EXE%" %PY_ARGS% -m domainkit.gui
-set "RC=%ERRORLEVEL%"
-if not "%RC%"=="0" (
-    echo.
-    echo domainkit GUI exited with code %RC%.
-    pause
+call :check_tk
+if errorlevel 1 if not "%PY%"=="%CODEX_PY%" if exist "%CODEX_PY%" (
+    set "PY=%CODEX_PY%"
+    call :check_tk
 )
-exit /b %RC%
+if errorlevel 1 (
+    echo GUI requires Python with Tcl/Tk support.
+    echo Install official Python 3.9+ with the tcl/tk component, or set
+    echo DOMAINKIT_TCL_LIBRARY and DOMAINKIT_TK_LIBRARY to compatible data directories.
+    exit /b 1
+)
+chcp 65001 >nul
+set "PYW="
+for %%P in ("%PY%") do (
+    if exist "%%~dpPpythonw.exe" set "PYW=%%~dpPpythonw.exe"
+)
+if defined PYW (
+    start "" "%PYW%" -m domainkit.gui
+) else (
+    "%PY%" -m domainkit.gui
+)
+
+exit /b %ERRORLEVEL%
+
+:check_tk
+if defined DOMAINKIT_DEBUG_LAUNCHER (
+    echo [domainkit] Python: "%PY%"
+    echo [domainkit] TCL_LIBRARY: "%TCL_LIBRARY%"
+    echo [domainkit] TK_LIBRARY: "%TK_LIBRARY%"
+    "%PY%" -c "import tkinter; tkinter.Tcl()"
+) else (
+    "%PY%" -c "import tkinter; tkinter.Tcl()" >nul 2>&1
+)
+exit /b %ERRORLEVEL%
